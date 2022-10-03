@@ -1,23 +1,10 @@
-// use std::sync::{Arc, Mutex};
-
 use color_eyre::Report;
 use postcard::experimental::schema::{NamedType, NamedVariant, Schema, SdmTy, Varint};
+use std::{collections::VecDeque, default::Default, fmt::Debug};
 use tui::style::Style;
-// use tui::style::Style;
-use std::default::Default;
-use tui_va_tree_edit::{Args, Branch, NumberType, StringType, Tree, TreeEdit, Value};
-
-// macro_rules! type_from_default {
-//     ($ty:expr; [$($ty_inner:expr,)?] $ty_value:ty) => {
-//         $ty($($ty_inner.into(),)? Self::wrap_json(json!(<$ty_value>::default()))).into()
-//     };
-//     ($ty:expr; $ty_value:ty) => {
-//         type_from_default!($ty; [] $ty_value)
-//     };
-//     ($ty:expr; $ty_inner:expr, $ty_value:ty) => {
-//         type_from_default!($ty; [$ty_inner,] $ty_value)
-//     };
-// }
+use tui_va_tree_edit::{
+    Args, Branch, Branches, Node, NumberType, StringType, Tree, TreeEdit, Type as TreeType, Value,
+};
 
 type Map<K, V> = linked_hash_map::LinkedHashMap<K, V>;
 type List = Map<&'static str, Optional>;
@@ -27,69 +14,8 @@ pub enum Event {
     UI(EventUI),
     GenerateMessage,
 }
-// pub type Value = Ref<serde_json::Value>;
 
-// #[derive(Debug, Clone, Default)]
-// pub struct Ref<T: ?Sized> {
-//     inner: Arc<Mutex<T>>,
-// }
-// impl<T> Ref<T> {
-//     pub fn new(value: T) -> Self {
-//         Self {
-//             inner: Arc::new(Mutex::new(value)),
-//         }
-//     }
-//     pub fn as_ref(&mut self) -> &mut Arc<Mutex<T>> {
-//         &mut self.inner
-//     }
-//     pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, T>> {
-//         self.inner.lock()
-//     }
-// }
-// impl<T> From<T> for Ref<T> {
-//     fn from(value: T) -> Self {
-//         Self::new(value)
-//     }
-// }
-
-// #[derive(Debug, Clone, PartialEq)]
-// pub enum Struct {
-//     Struct,
-//     Enum,
-//     EmunIn(&'static str),
-// }
-// impl Struct {
-//     pub fn is_struct(&self) -> bool {
-//         matches!(self, Self::Struct)
-//     }
-//     pub fn is_enum(&self) -> bool {
-//         matches!(self, Self::Enum | Self::EmunIn(_))
-//     }
-// }
-
-// #[derive(Debug, Clone)]
-// pub enum NumberArg {
-//     U8,
-//     I8,
-//     U16,
-//     I16,
-//     U32,
-//     I32,
-//     U64,
-//     I64,
-//     F32,
-//     F64,
-//     Usize,
-//     Isize,
-// }
-
-// #[derive(Debug, Clone)]
-// pub enum StringArg {
-//     Char,
-//     String,
-// }
-
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum Type {
     None,
     Bool,
@@ -145,27 +71,27 @@ impl Type {
 }
 
 #[derive(Clone)]
-pub struct TuiProtoc<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + 'a> {
+pub struct TuiProtoc<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + 'static> {
     ui: TreeEdit<'a>,
     offset: Vec<&'static str>,
     ty: Type,
-    phantom: std::marker::PhantomData<&'a T>,
+    queue: VecDeque<T>,
 }
-impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + 'a> AsRef<TuiProtoc<'a, T>>
+impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de>> AsRef<TuiProtoc<'a, T>>
     for TuiProtoc<'a, T>
 {
     fn as_ref(&self) -> &TuiProtoc<'a, T> {
         self
     }
 }
-impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + 'a> TuiProtoc<'a, T> {
+impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> TuiProtoc<'a, T> {
     pub fn new(title: impl Into<String>, offset: Vec<&'static str>) -> Self {
         let ty = Optional::from(T::SCHEMA).unwrap();
         Self {
             ui: Self::generate_ui(title.into(), Self::incise_ui(&ty, offset.iter()).unwrap()),
             offset,
             ty,
-            phantom: Default::default(),
+            queue: Default::default(),
         }
     }
 
@@ -182,157 +108,69 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + 'a> TuiProtoc<'a, T>
         &self.ui
     }
 
+    pub fn pool(&mut self) -> Result<T, ()> {
+        self.queue.pop_front().map_or(Err(()), |msg| Ok(msg))
+    }
+
     pub fn transition(&mut self, event: Event) {
         match event {
             Event::UI(event) => self.ui.transition(event),
-            Event::GenerateMessage => todo!(),
+            Event::GenerateMessage => {
+                if !self.ui.in_input_mode() {
+                    self.generate_msg(self.ui().position())
+                        .map_or_else(|str| log::error!("{str}"), |msg| self.queue.push_back(msg))
+                }
+            }
         }
     }
 
-    /*fn unwrap(src: &NamedType) -> Optional {
-        use serde_json::json;
-        <Vec<usize> as Default>::default();
-
-        match src.ty {
-            SdmTy::Struct(values) => {
-                let mut list = values
-                    .iter()
-                    .map(|&value| (value.name, Self::unwrap(value.ty)))
-                    .peekable();
-
-                if list.len() == 1 && {
-                    list.peek().map_or(false, |(_, opt)| {
-                        opt.is_false() && opt.unwrap_ref().is_enum()
-                    })
-                } {
-                    let (name, en) = list
-                        .next()
-                        .map(|(name, opt)| (name, opt.unwrap().as_list().unwrap()))
-                        .unwrap();
-
-                    Self::List(Lists::EmunIn(name), en).into()
-                } else {
-                    Self::List(Lists::List, list.collect::<List>()).into()
-                }
-            }
-            SdmTy::Enum(values) => Self::List(
-                Lists::Enum,
-                values
-                    .iter()
-                    .map(|&&NamedVariant { name, ty }| {
-                        (name, Self::unwrap(&NamedType { name, ty }))
-                    })
-                    .collect::<List>(),
-            )
-            .into(),
-            SdmTy::Unit => Self::None.into(),
-            SdmTy::Bool => type_from_default!(Self::Bool; bool),
-            SdmTy::I8 => type_from_default!(Self::Number; NumberArg::I8, i8),
-            SdmTy::U8 => type_from_default!(Self::Number; NumberArg::U8, u8),
-            SdmTy::Varint(ty) => match ty {
-                Varint::I16 => type_from_default!(Self::Number; NumberArg::I16, i16),
-                Varint::U16 => type_from_default!(Self::Number; NumberArg::U16, u16),
-                Varint::I32 => type_from_default!(Self::Number; NumberArg::I32, i32),
-                Varint::U32 => type_from_default!(Self::Number; NumberArg::U32, u32),
-                Varint::I64 | Varint::I128 => type_from_default!(Self::Number; NumberArg::I64, i16),
-                Varint::U64 | Varint::U128 => type_from_default!(Self::Number; NumberArg::U64, i32),
-                Varint::Isize => type_from_default!(Self::Number; NumberArg::Isize, isize),
-                Varint::Usize => type_from_default!(Self::Number; NumberArg::Usize, usize),
-            },
-            SdmTy::F32 => type_from_default!(Self::Number; NumberArg::F32, f32),
-            SdmTy::F64 => type_from_default!(Self::Number; NumberArg::F64, f64),
-            SdmTy::Char => type_from_default!(Self::String; StringArg::Char, String),
-            SdmTy::String => type_from_default!(Self::String; StringArg::String, String),
-            SdmTy::Option(value) => {
-                let unwrapped = Self::unwrap(value).unwrap();
-                if let Self::List(Lists::Enum | Lists::EmunIn(_), _) = unwrapped {
-                    unwrapped.into()
-                } else {
-                    Optional::True(unwrapped)
-                }
-            }
-            SdmTy::Seq(value) => {
-                type_from_default!(Self::Array; Self::unwrap(value).unwrap(), Vec::<serde_json::Value>)
-            }
-            SdmTy::TupleVariant(value) => Self::unwrap(value[0]),
-            SdmTy::ByteArray => todo!(),
-            SdmTy::UnitStruct => todo!(),
-            SdmTy::UnitVariant => todo!(),
-            SdmTy::NewtypeStruct(_) => todo!(),
-            SdmTy::NewtypeVariant(_) => todo!(),
-            SdmTy::Tuple(_) => todo!(),
-            SdmTy::TupleStruct(_) => todo!(),
-            SdmTy::Map { key: _, val: _ } => todo!(),
-            SdmTy::StructVariant(_) => todo!(),
-        }
-    }*/
-
-    // fn wrap_json(value: serde_json::Value) -> Value {
-    //     value.into()
-    // }
-
-    // pub fn as_ref(&self) -> &Self {
-    //     self
-    // }
-
-    // pub fn is_enum(&self) -> bool {
-    //     matches!(self, Self::List(Lists::Enum | Lists::EmunIn(_), _))
-    // }
-    // pub fn is_list(&self) -> bool {
-    //     matches!(self, Self::List(Lists::List, _))
-    // }
-    // pub fn as_list(self) -> Option<List> {
-    //     if let Self::List(_, en) = self {
-    //         Some(en)
-    //     } else {
-    //         None
-    //     }
-    // }
     fn generate_ui(title: String, ty: &Type) -> TreeEdit<'a> {
         let mut ret = TreeEdit::new(title);
 
         if ty.is_enum() {
-            for branch in Self::generate_ui_enum(ty.as_enum_ref().unwrap().1).into_iter() {
-                ret = ret.tab(branch);
+            for (name, branch) in Self::generate_ui_enum(ty.as_enum_ref().unwrap().1).into_iter() {
+                ret = ret.tab(name, branch);
             }
         }
 
         ret
     }
-    fn generate_ui_enum(list: &List) -> Vec<Branch<'a>> {
-        let mut ret = Vec::default();
-        list.iter().for_each(|(&name, opt)| {
-            if let Type::Enum(_, list) = opt.unwrap_ref() {
-                ret.push(
-                    Self::generate_ui_enum(list)
-                        .into_iter()
-                        .fold(Tree::new(name), |tree, branch| tree.branch(branch))
-                        .into(),
-                );
-            } else if let Type::Struct(list) = opt.unwrap_ref() {
-                ret.push(Self::generate_ui_struct(name, list).into());
-            } else if !opt.unwrap_ref().is_none() {
-                ret.push(Self::generate_ui_struct(name, &{
-                    let mut list = List::new();
-                    list.insert("Value", opt.clone());
-                    list
-                }).into())
-            } else {
-                ret.push(Tree::new(name).into())
-            }
-        });
-
-        ret
+    fn generate_ui_enum(list: &List) -> Branches<'a> {
+        list.iter()
+            .fold(Branches::default(), |mut ret, (&name, opt)| {
+                if let Type::Enum(_, list) = opt.unwrap_ref() {
+                    ret.insert(
+                        name.into(),
+                        Self::generate_ui_enum(list)
+                            .into_iter()
+                            .fold(Tree::default(), |tree, (name, branch)| {
+                                tree.branch(name, branch)
+                            })
+                            .into(),
+                    );
+                } else if let Type::Struct(list) = opt.unwrap_ref() {
+                    ret.insert(name.into(), Self::generate_ui_struct(list).into());
+                } else if !opt.unwrap_ref().is_none() {
+                    ret.insert(
+                        name.into(),
+                        Self::generate_ui_struct(&[(">>", opt.clone())].into_iter().collect())
+                            .into(),
+                    );
+                } else {
+                    ret.insert(name.into(), Tree::default().into());
+                }
+                ret
+            })
     }
-    fn generate_ui_struct(name: &'static str, list: &List) -> Args<'a> {
+    fn generate_ui_struct(list: &List) -> Args<'a> {
         list.iter().fold(
-            Args::new(name)
+            Args::default()
                 .names(list.iter().fold(vec![], |mut vec, (&name, _)| {
                     vec.push(name);
                     vec
                 }))
                 .columns(list.iter().fold(vec!["Value"], |mut vec, (_, opt)| {
-                    if vec.len() == 1 && opt.is_true() {
+                    if !vec.contains(&"State") && opt.is_true() {
                         vec.push("State");
                     }
                     vec
@@ -374,16 +212,18 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + 'a> TuiProtoc<'a, T>
             Type::Enum(_, list) => Some(
                 Self::generate_ui_enum(list)
                     .into_iter()
-                    .fold(Tree::new(""), |tree, branch| tree.branch(branch))
+                    .fold(Tree::default(), |tree, (name, branch)| {
+                        tree.branch(name, branch)
+                    })
                     .into(),
             ),
-            Type::Struct(list) => Some(Self::generate_ui_struct("", list).into()),
+            Type::Struct(list) => Some(Self::generate_ui_struct(list).into()),
         }
     }
 
     fn incise_ui<'b>(
         value: &'b Type,
-        mut key: std::slice::Iter<&'static str>,
+        mut key: impl Iterator<Item = &'b &'b str> + Debug,
     ) -> Result<&'b Type, Report> {
         if let Some(err) = value.as_ref().as_enum_ref().and_then(|(ty, _)| {
             ty.and_then(|name| {
@@ -403,134 +243,305 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + 'a> TuiProtoc<'a, T>
             .as_struct_ref()
             .or(value.as_enum_ref().and_then(|(_, list)| Some(list)))
         {
-            let name = key.next();
-
-            if name == None {
-                return Ok(value);
-            } else if let Some(value) = list.get(name.unwrap()) {
-                return Self::incise_ui(value.unwrap_ref(), key);
+            if let Some(res) = key.next().map_or(Some(Ok(value)), |&name| {
+                list.get(name)
+                    .map(|value| Self::incise_ui(value.unwrap_ref(), key))
+            }) {
+                return res;
             }
         }
 
         Err(Report::msg("Such a sequence does not exist"))
     }
 
-    // pub fn generate(&self, position: Vec<&'static str>) -> Result<T, String> {
-    //     let generated = Self::generate_impl(self, position.iter().peekable());
-    //     let msg = format!("Msg: {};", generated);
-    //     serde_json::from_value(generated).map_err(|err| format!("Err: {err}; {msg}"))
-    // }
+    pub fn generate_msg(&self, position: &Vec<Node>) -> Result<T, String> {
+        let generated = self
+            .ui
+            .get_current_tab()
+            .map(|(name, branch)| {
+                Self::generate_msg_offset(
+                    &self.ty,
+                    branch,
+                    self.offset.iter().chain([name.as_str()].iter()),
+                    position.iter().skip(1),
+                )
+            })
+            .unwrap_or_default();
 
-    // fn generate_impl(
-    //     value: &TreeEdit,
-    //     mut key: std::iter::Peekable<std::slice::Iter<'_, &str>>,
-    // ) -> serde_json::Value {
-    //     match value {
-    //         Type::None => serde_json::Value::Null,
-    //         Type::Bool(value)
-    //         | Type::Number(_, value)
-    //         | Type::String(_, value)
-    //         | Type::Array(_, value) => value.lock().unwrap().clone(),
-    //         Type::List(ty, list) => {
-    //             if let Lists::EmunIn(_) = ty {
-    //                 key.next();
-    //             }
+        let msg = format!("Msg: {};", generated);
+        serde_json::from_value(generated).map_err(|err| format!("Err: {err}; {msg}"))
+    }
 
-    //             let map = if let Lists::List = ty {
-    //                 key.next();
-    //                 list.iter()
-    //                     .map(|(&name, opt)| {
-    //                         (
-    //                             name.to_string(),
-    //                             Self::generate_impl(opt.unwrap_ref(), key.clone()),
-    //                         )
-    //                     })
-    //                     .collect()
-    //             } else {
-    //                 list.iter()
-    //                     .find(|(&name, _)| name == **key.peek().unwrap_or(&&""))
-    //                     .map(|(&name, opt)| {
-    //                         key.next();
-    //                         (name.to_string(), Self::generate_impl(opt.unwrap_ref(), key))
-    //                     })
-    //                     .map_or(serde_json::Map::new(), |(key, value)| {
-    //                         let mut map = serde_json::Map::new();
-    //                         map.insert(key, value);
-    //                         map
-    //                     })
-    //             };
+    fn generate_msg_offset<'b>(
+        ty: &Type,
+        value: &Branch<'a>,
+        mut key: impl Iterator<Item = &'b &'b str> + Clone,
+        key_ui: impl Iterator<Item = &'b Node> + Clone,
+    ) -> serde_json::Value {
+        use serde_json::json;
+        match ty {
+            Type::None => serde_json::Value::Null,
+            Type::Bool => json!(bool::default()),
+            Type::Number(ty) => match ty {
+                NumberType::F32 | NumberType::F64 => json!(f32::default()),
+                _ => serde_json::Value::Number(0.into()),
+            },
+            Type::String(_) => serde_json::Value::String("".into()),
+            Type::Array(_) => serde_json::Value::Array(vec![]),
+            ty => {
+                if let Some(nkey) = key.next() {
+                    if let Type::Enum(en, list) = ty {
+                        if en.is_some() { key.next() } else { Some(nkey) }
+                            .and_then(|&nkey| {
+                                list.iter()
+                                    .find_map(|(&name, opt)| {
+                                        if name == nkey {
+                                            Some(opt.unwrap_ref())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .map(|ty| {
+                                        serde_json::Value::Object(
+                                            [(
+                                                nkey.to_string(),
+                                                Self::generate_msg_offset(ty, value, key, key_ui),
+                                            )]
+                                            .into_iter()
+                                            .collect::<serde_json::Map<_, _>>(),
+                                        )
+                                    })
+                            })
+                            .map_or(serde_json::Value::Null, |value| {
+                                if let Some(name) = en {
+                                    serde_json::Value::Object(
+                                        [(name.to_string(), value)]
+                                            .into_iter()
+                                            .collect::<serde_json::Map<_, _>>(),
+                                    )
+                                } else {
+                                    value
+                                }
+                            })
+                    } else if let Type::Struct(list) = ty {
+                        // key.next();
+                        serde_json::Value::Object(
+                            list.into_iter()
+                                .map(|(&name, opt)| {
+                                    (
+                                        name.to_string(),
+                                        Self::generate_msg_offset(
+                                            opt.unwrap_ref(),
+                                            value,
+                                            key.clone(),
+                                            key_ui.clone(),
+                                        ),
+                                    )
+                                })
+                                .collect::<serde_json::Map<_, _>>(),
+                        )
+                    } else {
+                        serde_json::Value::Null
+                    }
+                } else {
+                    Self::generate_msg_ui(ty, value, key_ui)
+                }
+            }
+        }
+    }
 
-    //             let ret = serde_json::Value::Object(if let Lists::EmunIn(name) = ty {
-    //                 let mut _map = serde_json::Map::new();
-    //                 _map.insert((*name).into(), serde_json::Value::Object(map));
-    //                 _map
-    //             } else {
-    //                 map
-    //             });
+    fn generate_msg_ui<'b>(
+        ty: &Type,
+        value: &Branch<'a>,
+        mut key: impl Iterator<Item = &'b Node> + Clone,
+    ) -> serde_json::Value {
+        match value {
+            Branch::Args(args) => {
+                if let Some(value) = {
+                    let names = args.get_names_raw();
+                    if names.len() == 1 && names.contains(&">>".to_string()) {
+                        args.get_value_by_indexes(0, 0)
+                    } else {
+                        None
+                    }
+                } {
+                    return Self::tree_value_to_serde_value(ty, value, key);
+                } else {
+                    ty.as_struct_ref().map(|list| {
+                        key.next();
+                        list.into_iter()
+                            .filter_map(|(&name, opt)| {
+                                opt.as_true()
+                                    .and_then(|_| {
+                                        args.get_value(name, "State").and_then(|value| {
+                                            value.as_bool().and_then(|state| {
+                                                if !*state {
+                                                    Some(())
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                        })
+                                    })
+                                    .map_or(Some(opt.unwrap_ref()), |_| None)
+                                    .and_then(|ty| {
+                                        args.get_value_by_cindex(name, 0)
+                                            .map(|value| (name, ty, value))
+                                    })
+                            })
+                            .fold(serde_json::Map::new(), |mut map, (name, ty, value)| {
+                                map.insert(
+                                    name.to_string(),
+                                    Self::tree_value_to_serde_value(ty, value, key.clone()),
+                                );
+                                map
+                            })
+                    })
+                }
+            }
+            Branch::Tree(tree) => {
+                if !tree.get_branches().is_empty() {
+                    key.next()
+                        .map(|node| node.text())
+                        .and_then(|text| {
+                            Some(text).zip(
+                                tree.get_branches()
+                                    .iter()
+                                    .find_map(
+                                        |(name, branch)| {
+                                            if name == text {
+                                                Some(branch)
+                                            } else {
+                                                None
+                                            }
+                                        },
+                                    )
+                                    .zip(ty.as_enum_ref().and_then(|(_, list)| {
+                                        list.iter().find_map(|(name, opt)| {
+                                            if name.eq(text) {
+                                                Some(opt.unwrap_ref())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                    })),
+                            )
+                        })
+                        .map(|(name, (value, ty))| {
+                            [(name.clone(), Self::generate_msg_ui(ty, value, key))]
+                                .into_iter()
+                                .collect()
+                        })
+                } else {
+                    return serde_json::Value::Null;
+                }
+            }
+        }
+        .map_or(
+            serde_json::Value::Object(serde_json::Map::default()),
+            |map| {
+                serde_json::Value::Object(if let Type::Enum(Some(name), _) = ty {
+                    [(name.to_string(), serde_json::Value::Object(map))]
+                        .into_iter()
+                        .collect()
+                } else {
+                    map
+                })
+            },
+        )
+        // match value {
+        //     Type::None => serde_json::Value::Null,
+        //     Type::Bool(value)
+        //     | Type::Number(_, value)
+        //     | Type::String(_, value)
+        //     | Type::Array(_, value) => value.lock().unwrap().clone(),
+        //     Type::List(ty, list) => {
+        //         if let Lists::EmunIn(_) = ty {
+        //             key.next();
+        //         }
 
-    //             ret
-    //         }
-    //     }
-    // }
+        //         let map = if let Lists::List = ty {
+        //             key.next();
+        //             list.iter()
+        //                 .map(|(&name, opt)| {
+        //                     (
+        //                         name.to_string(),
+        //                         Self::generate_impl(opt.unwrap_ref(), key.clone()),
+        //                     )
+        //                 })
+        //                 .collect()
+        //         } else {
+        //             list.iter()
+        //                 .find(|(&name, _)| name == **key.peek().unwrap_or(&&""))
+        //                 .map(|(&name, opt)| {
+        //                     key.next();
+        //                     (name.to_string(), Self::generate_impl(opt.unwrap_ref(), key))
+        //                 })
+        //                 .map_or(serde_json::Map::new(), |(key, value)| {
+        //                     let mut map = serde_json::Map::new();
+        //                     map.insert(key, value);
+        //                     map
+        //                 })
+        //         };
+
+        //         let ret = serde_json::Value::Object(if let Lists::EmunIn(name) = ty {
+        //             let mut _map = serde_json::Map::new();
+        //             _map.insert((*name).into(), serde_json::Value::Object(map));
+        //             _map
+        //         } else {
+        //             map
+        //         });
+
+        //         ret
+        //     }
+        // }
+    }
+
+    fn tree_value_to_serde_value<'b>(
+        ty: &Type,
+        value: &Value<'a>,
+        key: impl Iterator<Item = &'b Node> + Clone,
+    ) -> serde_json::Value {
+        use serde_json::json;
+        match value.get_type() {
+            TreeType::None => serde_json::Value::Null,
+            TreeType::Bool => serde_json::Value::Bool(*value.as_bool().unwrap()),
+            TreeType::Number(ty) => match ty {
+                NumberType::U8 => json!(value.parse::<u8>().unwrap_or_default()),
+                NumberType::I8 => json!(value.parse::<i8>().unwrap_or_default()),
+                NumberType::U16 => json!(value.parse::<u16>().unwrap_or_default()),
+                NumberType::I16 => json!(value.parse::<i16>().unwrap_or_default()),
+                NumberType::U32 => json!(value.parse::<u32>().unwrap_or_default()),
+                NumberType::I32 => json!(value.parse::<i32>().unwrap_or_default()),
+                NumberType::U64 => json!(value.parse::<u64>().unwrap_or_default()),
+                NumberType::I64 => json!(value.parse::<i64>().unwrap_or_default()),
+                NumberType::F32 => json!(value.parse::<f32>().unwrap_or_default()),
+                NumberType::F64 => json!(value.parse::<f64>().unwrap_or_default()),
+                NumberType::Usize => json!(value.parse::<usize>().unwrap_or_default()),
+                NumberType::Isize => json!(value.parse::<isize>().unwrap_or_default()),
+            },
+            TreeType::String(ty) => match ty {
+                StringType::Char => value.parse::<String>().and_then(|str| {
+                    if str.len() > 0 {
+                        str.as_bytes()
+                            .first()
+                            .map(|byte| *byte as char)
+                            .map(|ch| ch.to_string())
+                    } else {
+                        None
+                    }
+                }),
+                StringType::String => value.parse::<String>(),
+            }
+            .unwrap_or(String::default())
+            .into(),
+            TreeType::Array(_) => serde_json::Value::Array(vec![]),
+            TreeType::Struct => Self::generate_msg_ui(ty, value.as_struct().unwrap(), key),
+        }
+    }
 }
-// impl From<Type> for Value {
-//     fn from(value: Type) -> Self {
-//         match value {
-//             Type::None => Type::wrap_json(serde_json::Value::Null),
-//             Type::Bool(value)
-//             | Type::Number(_, value)
-//             | Type::String(_, value)
-//             | Type::Array(_, value) => value,
-//             Type::List(ty, list) => {
-//                 let mut map = serde_json::Map::new();
 
-//                 for (&name, value) in &list {
-//                     map.insert(name.into(), value.unwrap_ref().into());
-//                 }
-
-//                 let ret = serde_json::Value::Object(map);
-
-//                 Type::wrap_json(if let Lists::EmunIn(name) = ty {
-//                     let mut map = serde_json::Map::new();
-//                     map.insert(name.into(), ret);
-//                     serde_json::Value::Object(map)
-//                 } else {
-//                     ret
-//                 })
-//             }
-//         }
-//     }
-// }
-// impl From<&Type> for serde_json::Value {
-//     fn from(value: &Type) -> Self {
-//         match value {
-//             Type::None => serde_json::Value::Null,
-//             Type::Bool(value)
-//             | Type::Number(_, value)
-//             | Type::String(_, value)
-//             | Type::Array(_, value) => value.lock().unwrap().clone(),
-//             Type::List(ty, list) => {
-//                 let mut map = serde_json::Map::new();
-
-//                 for (&name, value) in list {
-//                     map.insert(name.into(), value.unwrap_ref().into());
-//                 }
-
-//                 let ret = serde_json::Value::Object(map);
-
-//                 if let Lists::EmunIn(name) = ty {
-//                     let mut map = serde_json::Map::new();
-//                     map.insert((*name).into(), ret);
-//                     serde_json::Value::Object(map)
-//                 } else {
-//                     ret
-//                 }
-//             }
-//         }
-//     }
-// }
-
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum Optional {
     True(Type),
     False(Type),
@@ -549,6 +560,21 @@ impl Optional {
     pub fn unwrap_mut_ref(&mut self) -> &mut Type {
         match self {
             Self::True(value) | Self::False(value) => value,
+        }
+    }
+
+    pub fn as_true(&self) -> Option<&Type> {
+        if self.is_true() {
+            Some(self.unwrap_ref())
+        } else {
+            None
+        }
+    }
+    pub fn as_false(&self) -> Option<&Type> {
+        if self.is_false() {
+            Some(self.unwrap_ref())
+        } else {
+            None
         }
     }
 

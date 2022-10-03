@@ -10,6 +10,7 @@ serde = { version = "1.0.144", features = [ "derive" ] }
 postcard = { version = "1.0.2", features = [ "experimental-derive", "use-std" ] }
 serde_json = "1.0.85"
 linked-hash-map = "0.5.6"
+log = { version = "0.4", features = ["std"] }
 color-eyre = "0.6.2"
 tui = { version = "0.19.0" }
-tui-va-tree-edit = { path = "../tui_va_tree_edit" }
+tui-va-tree-edit = { git = "https://github.com/Volkalex28/tui_va_tree_edit" }
