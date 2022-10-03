@@ -324,7 +324,6 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                                 }
                             })
                     } else if let Type::Struct(list) = ty {
-                        // key.next();
                         serde_json::Value::Object(
                             list.into_iter()
                                 .map(|(&name, opt)| {
@@ -449,52 +448,6 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                 })
             },
         )
-        // match value {
-        //     Type::None => serde_json::Value::Null,
-        //     Type::Bool(value)
-        //     | Type::Number(_, value)
-        //     | Type::String(_, value)
-        //     | Type::Array(_, value) => value.lock().unwrap().clone(),
-        //     Type::List(ty, list) => {
-        //         if let Lists::EmunIn(_) = ty {
-        //             key.next();
-        //         }
-
-        //         let map = if let Lists::List = ty {
-        //             key.next();
-        //             list.iter()
-        //                 .map(|(&name, opt)| {
-        //                     (
-        //                         name.to_string(),
-        //                         Self::generate_impl(opt.unwrap_ref(), key.clone()),
-        //                     )
-        //                 })
-        //                 .collect()
-        //         } else {
-        //             list.iter()
-        //                 .find(|(&name, _)| name == **key.peek().unwrap_or(&&""))
-        //                 .map(|(&name, opt)| {
-        //                     key.next();
-        //                     (name.to_string(), Self::generate_impl(opt.unwrap_ref(), key))
-        //                 })
-        //                 .map_or(serde_json::Map::new(), |(key, value)| {
-        //                     let mut map = serde_json::Map::new();
-        //                     map.insert(key, value);
-        //                     map
-        //                 })
-        //         };
-
-        //         let ret = serde_json::Value::Object(if let Lists::EmunIn(name) = ty {
-        //             let mut _map = serde_json::Map::new();
-        //             _map.insert((*name).into(), serde_json::Value::Object(map));
-        //             _map
-        //         } else {
-        //             map
-        //         });
-
-        //         ret
-        //     }
-        // }
     }
 
     fn tree_value_to_serde_value<'b>(
