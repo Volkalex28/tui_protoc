@@ -118,7 +118,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
             Event::GenerateMessage => {
                 if !self.ui.in_input_mode() {
                     self.generate_msg(self.ui().position())
-                        .map_or_else(|str| log::error!("{str}"), |msg| self.queue.push_back(msg))
+                        .map_or_else(|str| log::error!(target:"tui_protoc", "{str}"), |msg| self.queue.push_back(msg))
                 }
             }
         }
