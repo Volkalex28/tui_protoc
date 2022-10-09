@@ -108,8 +108,8 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
         &self.ui
     }
 
-    pub fn pool(&mut self) -> Result<T, ()> {
-        self.queue.pop_front().map_or(Err(()), |msg| Ok(msg))
+    pub fn pool(&mut self) -> Option<T> {
+        self.queue.pop_front()
     }
 
     pub fn transition(&mut self, event: Event) {
@@ -117,8 +117,10 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
             Event::UI(event) => self.ui.transition(event),
             Event::GenerateMessage => {
                 if !self.ui.in_input_mode() {
-                    self.generate_msg(self.ui().position())
-                        .map_or_else(|str| log::error!(target:"tui_protoc", "{str}"), |msg| self.queue.push_back(msg))
+                    self.generate_msg(self.ui.position()).map_or_else(
+                        |str| log::error!(target:"tui_protoc", "{str}"),
+                        |msg| self.queue.push_back(msg),
+                    )
                 }
             }
         }
@@ -241,7 +243,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
         } else if let Some(list) = value
             .as_ref()
             .as_struct_ref()
-            .or(value.as_enum_ref().and_then(|(_, list)| Some(list)))
+            .or_else(|| value.as_enum_ref().map(|(_, list)| list))
         {
             if let Some(res) = key.next().map_or(Some(Ok(value)), |&name| {
                 list.get(name)
@@ -254,7 +256,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
         Err(Report::msg("Such a sequence does not exist"))
     }
 
-    pub fn generate_msg(&self, position: &Vec<Node>) -> Result<T, String> {
+    pub fn generate_msg(&self, position: &[Node]) -> Result<T, String> {
         let generated = self
             .ui
             .get_current_tab()
@@ -475,7 +477,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
             },
             TreeType::String(ty) => match ty {
                 StringType::Char => value.parse::<String>().and_then(|str| {
-                    if str.len() > 0 {
+                    if !str.is_empty() {
                         str.as_bytes()
                             .first()
                             .map(|byte| *byte as char)
@@ -486,7 +488,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                 }),
                 StringType::String => value.parse::<String>(),
             }
-            .unwrap_or(String::default())
+            .unwrap_or_default()
             .into(),
             TreeType::Array(_) => serde_json::Value::Array(vec![]),
             TreeType::Struct => Self::generate_msg_ui(ty, value.as_struct().unwrap(), key),
