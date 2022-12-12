@@ -1,13 +1,13 @@
 use color_eyre::Report;
 use postcard::experimental::schema::{NamedType, NamedVariant, Schema, SdmTy, Varint};
-use std::{collections::VecDeque, default::Default, fmt::Debug};
+use std::{collections::VecDeque, default::Default, fmt::Debug, ops::Deref};
 use tui::style::Style;
 use tui_va_tree_edit::{
     Args, Branch, Branches, Node, NumberType, StringType, Tree, TreeEdit, Type as TreeType, Value,
 };
 
 type Map<K, V> = linked_hash_map::LinkedHashMap<K, V>;
-type List = Map<&'static str, Optional>;
+type List = Map<String, Optional>;
 
 pub use tui_va_tree_edit::Event as EventUI;
 pub enum Event {
@@ -22,7 +22,7 @@ pub enum Type {
     Number(NumberType),
     String(StringType),
     Array(Box<Type>),
-    Enum(Option<&'static str>, List),
+    Enum(Option<String>, List),
     Struct(List),
 }
 impl AsRef<Type> for Type {
@@ -54,14 +54,21 @@ impl Type {
             None
         }
     }
-    pub fn as_enum(self) -> Option<(Option<&'static str>, List)> {
+    pub fn as_array_ref(&self) -> Option<&Type> {
+        if let Self::Array(en) = self {
+            Some(en.as_ref())
+        } else {
+            None
+        }
+    }
+    pub fn as_enum(self) -> Option<(Option<String>, List)> {
         if let Self::Enum(opt, en) = self {
             Some((opt, en))
         } else {
             None
         }
     }
-    pub fn as_enum_ref(&self) -> Option<(&Option<&'static str>, &List)> {
+    pub fn as_enum_ref(&self) -> Option<(&Option<String>, &List)> {
         if let Self::Enum(opt, en) = self {
             Some((opt, en))
         } else {
@@ -71,9 +78,9 @@ impl Type {
 }
 
 #[derive(Clone)]
-pub struct TuiProtoc<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + 'static> {
+pub struct TuiProtoc<'a, T: Schema + for<'de> serde::de::Deserialize<'de>> {
     ui: TreeEdit<'a>,
-    offset: Vec<&'static str>,
+    offset: Vec<String>,
     ty: Type,
     queue: VecDeque<T>,
 }
@@ -84,11 +91,18 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de>> AsRef<TuiProtoc<'a, T
         self
     }
 }
-impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> TuiProtoc<'a, T> {
-    pub fn new(title: impl Into<String>, offset: Vec<&'static str>) -> Self {
+impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a, T> {
+    pub fn new<S, I: IntoIterator<Item = S>>(title: impl ToString, offset: I) -> TuiProtoc<'a, T>
+    where
+        String: From<S>,
+    {
         let ty = Optional::from(T::SCHEMA).unwrap();
-        Self {
-            ui: Self::generate_ui(title.into(), Self::incise_ui(&ty, offset.iter()).unwrap()),
+        let offset = offset.into_iter().map(String::from).collect::<Vec<_>>();
+        TuiProtoc {
+            ui: TuiProtoc::<T>::generate_ui(
+                title.to_string(),
+                TuiProtoc::<T>::incise_ui(&ty, offset.iter()).unwrap(),
+            ),
             offset,
             ty,
             queue: Default::default(),
@@ -126,7 +140,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
         }
     }
 
-    fn generate_ui(title: String, ty: &Type) -> TreeEdit<'a> {
+    fn generate_ui<'i, 'o>(title: String, ty: &'i Type) -> TreeEdit<'o> {
         let mut ret = TreeEdit::new(title);
 
         if ty.is_enum() {
@@ -137,13 +151,13 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
 
         ret
     }
-    fn generate_ui_enum(list: &List) -> Branches<'a> {
+    fn generate_ui_enum<'i, 'o>(list: &'i List) -> Branches<'o> {
         list.iter()
-            .fold(Branches::default(), |mut ret, (&name, opt)| {
+            .fold(Branches::default(), |mut ret, (name, opt)| {
                 if let Type::Enum(_, list) = opt.unwrap_ref() {
                     ret.insert(
                         name.into(),
-                        Self::generate_ui_enum(list)
+                        TuiProtoc::<T>::generate_ui_enum(list)
                             .into_iter()
                             .fold(Tree::default(), |tree, (name, branch)| {
                                 tree.branch(name, branch)
@@ -151,12 +165,14 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                             .into(),
                     );
                 } else if let Type::Struct(list) = opt.unwrap_ref() {
-                    ret.insert(name.into(), Self::generate_ui_struct(list).into());
+                    ret.insert(name.into(), TuiProtoc::<T>::generate_ui_struct(list).into());
                 } else if !opt.unwrap_ref().is_none() {
                     ret.insert(
                         name.into(),
-                        Self::generate_ui_struct(&[(">>", opt.clone())].into_iter().collect())
-                            .into(),
+                        TuiProtoc::<T>::generate_ui_struct(
+                            &[(">>".to_string(), opt.clone())].into_iter().collect(),
+                        )
+                        .into(),
                     );
                 } else {
                     ret.insert(name.into(), Tree::default().into());
@@ -164,10 +180,10 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                 ret
             })
     }
-    fn generate_ui_struct(list: &List) -> Args<'a> {
+    fn generate_ui_struct<'i, 'o>(list: &'i List) -> Args<'o> {
         list.iter().fold(
             Args::default()
-                .names(list.iter().fold(vec![], |mut vec, (&name, _)| {
+                .names(list.iter().fold(vec![], |mut vec, (name, _)| {
                     vec.push(name);
                     vec
                 }))
@@ -177,7 +193,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                     }
                     vec
                 })),
-            |mut args, (&name, opt)| {
+            |mut args, (name, opt)| {
                 if let Some(value) = Self::generate_ui_value(opt.unwrap_ref()) {
                     if opt.is_true() {
                         args = args.value(name, "State", true)
@@ -189,7 +205,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
             },
         )
     }
-    fn generate_ui_value(ty: &Type) -> Option<Value<'a>> {
+    fn generate_ui_value<'i, 'o>(ty: &'i Type) -> Option<Value<'o>> {
         match ty {
             Type::None => None,
             Type::Bool => Some(false.into()),
@@ -208,9 +224,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                 NumberType::Isize => isize::default().into(),
             }),
             Type::String(_) => Some(String::default().into()),
-            Type::Array(ty) => {
-                Self::generate_ui_value(ty.as_ref()).map(|value| value.into_clear_array())
-            }
+            Type::Array(ty) => Self::generate_ui_value(ty.as_ref()).map(|value| value.into_array()),
             Type::Enum(_, list) => Some(
                 Self::generate_ui_enum(list)
                     .into_iter()
@@ -223,13 +237,13 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
         }
     }
 
-    fn incise_ui<'b>(
-        value: &'b Type,
-        mut key: impl Iterator<Item = &'b &'b str> + Debug,
-    ) -> Result<&'b Type, Report> {
+    fn incise_ui<'b, 's, I>(value: &'b Type, mut key: I) -> Result<&'b Type, Report>
+    where
+        I: Iterator<Item = &'s String> + Debug,
+    {
         if let Some(err) = value.as_ref().as_enum_ref().and_then(|(ty, _)| {
-            ty.and_then(|name| {
-                if name != *key.next().unwrap_or(&name) {
+            ty.as_ref().and_then(|name| {
+                if name != key.next().unwrap_or(&name) {
                     Some(Report::msg(format!(
                         "Such a sequence does not exist {:?} {:?}",
                         key, name
@@ -245,7 +259,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
             .as_struct_ref()
             .or_else(|| value.as_enum_ref().map(|(_, list)| list))
         {
-            if let Some(res) = key.next().map_or(Some(Ok(value)), |&name| {
+            if let Some(res) = key.next().map_or(Some(Ok(value)), |name| {
                 list.get(name)
                     .map(|value| Self::incise_ui(value.unwrap_ref(), key))
             }) {
@@ -264,7 +278,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                 Self::generate_msg_offset(
                     &self.ty,
                     branch,
-                    self.offset.iter().chain([name.as_str()].iter()),
+                    self.offset.iter().chain([name].into_iter()),
                     position.iter().skip(1),
                 )
             })
@@ -274,12 +288,16 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
         serde_json::from_value(generated).map_err(|err| format!("Err: {err}; {msg}"))
     }
 
-    fn generate_msg_offset<'b>(
+    fn generate_msg_offset<'s, 'n, IS, IN>(
         ty: &Type,
-        value: &Branch<'a>,
-        mut key: impl Iterator<Item = &'b &'b str> + Clone,
-        key_ui: impl Iterator<Item = &'b Node> + Clone,
-    ) -> serde_json::Value {
+        value: &Branch,
+        mut key: IS,
+        key_ui: IN,
+    ) -> serde_json::Value
+    where
+        IS: Iterator<Item = &'s String> + Clone,
+        IN: Iterator<Item = &'n Node> + Clone,
+    {
         use serde_json::json;
         match ty {
             Type::None => serde_json::Value::Null,
@@ -289,14 +307,25 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                 _ => serde_json::Value::Number(0.into()),
             },
             Type::String(_) => serde_json::Value::String("".into()),
-            Type::Array(_) => serde_json::Value::Array(vec![]),
+            Type::Array(ty) => {
+                let Some(arr) = value.as_array().map(|arr| arr.get_branches()) else {
+                    log::error!("Not Array");
+                    return serde_json::Value::Array(vec![]);
+                };
+                log::info!("Array: {arr:#?}");
+                serde_json::Value::Array(
+                    arr.iter()
+                        .map(|(_, item)| Self::generate_msg_ui(ty.deref(), item, key_ui.clone()))
+                        .collect::<Vec<_>>(),
+                )
+            }
             ty => {
                 if let Some(nkey) = key.next() {
                     if let Type::Enum(en, list) = ty {
                         if en.is_some() { key.next() } else { Some(nkey) }
-                            .and_then(|&nkey| {
+                            .and_then(|nkey| {
                                 list.iter()
-                                    .find_map(|(&name, opt)| {
+                                    .find_map(|(name, opt)| {
                                         if name == nkey {
                                             Some(opt.unwrap_ref())
                                         } else {
@@ -328,9 +357,9 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                     } else if let Type::Struct(list) = ty {
                         serde_json::Value::Object(
                             list.into_iter()
-                                .map(|(&name, opt)| {
+                                .map(|(name, opt)| {
                                     (
-                                        name.to_string(),
+                                        name.clone(),
                                         Self::generate_msg_offset(
                                             opt.unwrap_ref(),
                                             value,
@@ -351,54 +380,47 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
         }
     }
 
-    fn generate_msg_ui<'b>(
-        ty: &Type,
-        value: &Branch<'a>,
-        mut key: impl Iterator<Item = &'b Node> + Clone,
-    ) -> serde_json::Value {
+    fn generate_msg_ui<'n, I>(ty: &Type, value: &Branch, mut key: I) -> serde_json::Value
+    where
+        I: Iterator<Item = &'n Node> + Clone,
+    {
         match value {
-            Branch::Args(args) => {
+            Branch::Args(args) => 'val: {
                 if let Some(value) = {
                     let names = args.get_names_raw();
-                    if names.len() == 1 && names.contains(&">>".to_string()) {
-                        args.get_value_by_indexes(0, 0)
-                    } else {
-                        None
-                    }
+                    (names.len() == 1 && names.contains(&">>".to_string()))
+                        .then(|| args.get_value_by_indexes(0, 0))
+                        .flatten()
                 } {
                     return Self::tree_value_to_serde_value(ty, value, key);
-                } else {
-                    ty.as_struct_ref().map(|list| {
-                        key.next();
-                        list.into_iter()
-                            .filter_map(|(&name, opt)| {
-                                opt.as_true()
-                                    .and_then(|_| {
-                                        args.get_value(name, "State").and_then(|value| {
-                                            value.as_bool().and_then(|state| {
-                                                if !*state {
-                                                    Some(())
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                        })
-                                    })
-                                    .map_or(Some(opt.unwrap_ref()), |_| None)
-                                    .and_then(|ty| {
-                                        args.get_value_by_cindex(name, 0)
-                                            .map(|value| (name, ty, value))
-                                    })
+                }
+                let Some(list) = ty.as_struct_ref() else {
+                    break 'val None;
+                };
+
+                key.next();
+                list.into_iter()
+                    .filter_map(|(name, opt)| {
+                        opt.as_true()
+                            .and_then(|_| {
+                                args.get_value(name, "State").and_then(|value| {
+                                    value.as_bool().and_then(|state| (!*state).then_some(()))
+                                })
                             })
-                            .fold(serde_json::Map::new(), |mut map, (name, ty, value)| {
-                                map.insert(
-                                    name.to_string(),
-                                    Self::tree_value_to_serde_value(ty, value, key.clone()),
-                                );
-                                map
+                            .map_or(Some(opt.unwrap_ref()), |_| None)
+                            .and_then(|ty| {
+                                args.get_value_by_cindex(name, 0)
+                                    .map(|value| (name, ty, value))
                             })
                     })
-                }
+                    .fold(serde_json::Map::new(), |mut map, (name, ty, value)| {
+                        map.insert(
+                            name.to_string(),
+                            Self::tree_value_to_serde_value(ty, value, key.clone()),
+                        );
+                        map
+                    })
+                    .into()
             }
             Branch::Tree(tree) => {
                 if !tree.get_branches().is_empty() {
@@ -408,22 +430,10 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                             Some(text).zip(
                                 tree.get_branches()
                                     .iter()
-                                    .find_map(
-                                        |(name, branch)| {
-                                            if name == text {
-                                                Some(branch)
-                                            } else {
-                                                None
-                                            }
-                                        },
-                                    )
+                                    .find_map(|(name, branch)| (name == text).then_some(branch))
                                     .zip(ty.as_enum_ref().and_then(|(_, list)| {
                                         list.iter().find_map(|(name, opt)| {
-                                            if name.eq(text) {
-                                                Some(opt.unwrap_ref())
-                                            } else {
-                                                None
-                                            }
+                                            name.eq(text).then_some(opt.unwrap_ref())
                                         })
                                     })),
                             )
@@ -436,6 +446,28 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
                 } else {
                     return serde_json::Value::Null;
                 }
+            }
+            Branch::Array(arr) => {
+                let ty = ty.as_array_ref().unwrap();
+                let wrapped = arr.is_wrapped();
+                return serde_json::Value::Array(
+                    arr.get_branches()
+                        .iter()
+                        .map(|(_, b)| {
+                            if !wrapped {
+                                Self::tree_value_to_serde_value(
+                                    ty,
+                                    b.as_args()
+                                        .and_then(|a| a.get_value_by_indexes(0, 0))
+                                        .unwrap(),
+                                    key.clone(),
+                                )
+                            } else {
+                                Self::generate_msg_ui(ty, b, key.clone())
+                            }
+                        })
+                        .collect(),
+                );
             }
         }
         .map_or(
@@ -452,11 +484,10 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
         )
     }
 
-    fn tree_value_to_serde_value<'b>(
-        ty: &Type,
-        value: &Value<'a>,
-        key: impl Iterator<Item = &'b Node> + Clone,
-    ) -> serde_json::Value {
+    fn tree_value_to_serde_value<'n, I>(ty: &Type, value: &Value, key: I) -> serde_json::Value
+    where
+        I: Iterator<Item = &'n Node> + Clone,
+    {
         use serde_json::json;
         match value.get_type() {
             TreeType::None => serde_json::Value::Null,
@@ -490,8 +521,9 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug + 'static> Tui
             }
             .unwrap_or_default()
             .into(),
-            TreeType::Array(_) => serde_json::Value::Array(vec![]),
-            TreeType::Struct => Self::generate_msg_ui(ty, value.as_struct().unwrap(), key),
+            TreeType::Array(_) | TreeType::Struct => {
+                Self::generate_msg_ui(ty, value.as_struct().unwrap(), key)
+            }
         }
     }
 }
@@ -551,11 +583,11 @@ impl From<&NamedType> for Optional {
             SdmTy::Struct(values) => {
                 let mut list = values
                     .iter()
-                    .map(|&value| (value.name, value.ty.into()))
+                    .map(|&value| (value.name.to_string(), value.ty.into()))
                     .peekable();
 
                 if list.len() == 1 && {
-                    list.peek().map_or(false, |(_, opt): &(&str, Optional)| {
+                    list.peek().map_or(false, |(_, opt): &(_, Optional)| {
                         opt.is_false() && opt.unwrap_ref().is_enum()
                     })
                 } {
@@ -573,7 +605,9 @@ impl From<&NamedType> for Optional {
                 None,
                 values
                     .iter()
-                    .map(|&&NamedVariant { name, ty }| (name, (&NamedType { name, ty }).into()))
+                    .map(|&&NamedVariant { name, ty }| {
+                        (name.to_string(), (&NamedType { name, ty }).into())
+                    })
                     .collect::<List>(),
             )
             .into(),
