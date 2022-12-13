@@ -243,7 +243,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
     {
         if let Some(err) = value.as_ref().as_enum_ref().and_then(|(ty, _)| {
             ty.as_ref().and_then(|name| {
-                if name != key.next().unwrap_or(&name) {
+                if name != key.next().unwrap_or(name) {
                     Some(Report::msg(format!(
                         "Such a sequence does not exist {:?} {:?}",
                         key, name
