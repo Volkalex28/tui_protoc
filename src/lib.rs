@@ -154,7 +154,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
     fn generate_ui_enum<'i, 'o>(list: &'i List) -> Branches<'o> {
         list.iter()
             .fold(Branches::default(), |mut ret, (name, opt)| {
-                if let Type::Enum(_, list) = opt.unwrap_ref() {
+                if let Type::Enum(_, list) = opt.unwrap() {
                     ret.insert(
                         name.into(),
                         TuiProtoc::<T>::generate_ui_enum(list)
@@ -164,9 +164,9 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                             })
                             .into(),
                     );
-                } else if let Type::Struct(list) = opt.unwrap_ref() {
+                } else if let Type::Struct(list) = opt.unwrap() {
                     ret.insert(name.into(), TuiProtoc::<T>::generate_ui_struct(list).into());
-                } else if !opt.unwrap_ref().is_none() {
+                } else if !opt.unwrap().is_none() {
                     ret.insert(
                         name.into(),
                         TuiProtoc::<T>::generate_ui_struct(
@@ -194,7 +194,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                     vec
                 })),
             |mut args, (name, opt)| {
-                if let Some(value) = Self::generate_ui_value(opt.unwrap_ref()) {
+                if let Some(value) = Self::generate_ui_value(opt.unwrap()) {
                     if opt.is_true() {
                         args = args.value(name, "State", true)
                     }
@@ -261,7 +261,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
         {
             if let Some(res) = key.next().map_or(Some(Ok(value)), |name| {
                 list.get(name)
-                    .map(|value| Self::incise_ui(value.unwrap_ref(), key))
+                    .map(|value| Self::incise_ui(value.unwrap(), key))
             }) {
                 return res;
             }
@@ -327,7 +327,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                                 list.iter()
                                     .find_map(|(name, opt)| {
                                         if name == nkey {
-                                            Some(opt.unwrap_ref())
+                                            Some(opt.unwrap())
                                         } else {
                                             None
                                         }
@@ -361,7 +361,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                                     (
                                         name.clone(),
                                         Self::generate_msg_offset(
-                                            opt.unwrap_ref(),
+                                            opt.unwrap(),
                                             value,
                                             key.clone(),
                                             key_ui.clone(),
@@ -407,7 +407,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                                     value.as_bool().and_then(|state| (!*state).then_some(()))
                                 })
                             })
-                            .map_or(Some(opt.unwrap_ref()), |_| None)
+                            .map_or(Some(opt.unwrap()), |_| None)
                             .and_then(|ty| {
                                 args.get_value_by_cindex(name, 0)
                                     .map(|value| (name, ty, value))
@@ -433,7 +433,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                                     .find_map(|(name, branch)| (name == text).then_some(branch))
                                     .zip(ty.as_enum_ref().and_then(|(_, list)| {
                                         list.iter().find_map(|(name, opt)| {
-                                            name.eq(text).then_some(opt.unwrap_ref())
+                                            name.eq(text).then_some(opt.unwrap())
                                         })
                                     })),
                             )
@@ -528,53 +528,64 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
     }
 }
 
+trait OptionalTrait<T> {
+    fn unwrap(self) -> T;
+}
+
 #[derive(Debug, Clone)]
-pub enum Optional {
-    True(Type),
-    False(Type),
+pub enum Opt {
+    True,
+    False,
+}
+
+#[derive(Debug, Clone)]
+pub struct Optional {
+    opt: Opt,
+    ty: Type,
 }
 impl Optional {
-    pub fn unwrap(self) -> Type {
-        match self {
-            Self::True(value) | Self::False(value) => value,
-        }
-    }
-    pub fn unwrap_ref(&self) -> &Type {
-        match self {
-            Self::True(value) | Self::False(value) => value,
-        }
-    }
-    pub fn unwrap_mut_ref(&mut self) -> &mut Type {
-        match self {
-            Self::True(value) | Self::False(value) => value,
-        }
-    }
-
     pub fn as_true(&self) -> Option<&Type> {
-        if self.is_true() {
-            Some(self.unwrap_ref())
-        } else {
-            None
-        }
+        self.is_true().then_some(&self.ty)
     }
     pub fn as_false(&self) -> Option<&Type> {
-        if self.is_false() {
-            Some(self.unwrap_ref())
-        } else {
-            None
+        self.is_false().then_some(&self.ty)
+    }
+
+    pub fn switch(&mut self) {
+        self.opt = match self.opt {
+            Opt::True => Opt::False,
+            Opt::False => Opt::True,
         }
     }
 
     pub fn is_true(&self) -> bool {
-        matches!(self, Self::True(_))
+        matches!(self.opt, Opt::True)
     }
     pub fn is_false(&self) -> bool {
-        matches!(self, Self::False(_))
+        !self.is_true()
     }
 }
 impl From<Type> for Optional {
     fn from(value: Type) -> Self {
-        Self::False(value)
+        Self {
+            opt: Opt::False,
+            ty: value,
+        }
+    }
+}
+impl OptionalTrait<Type> for Optional {
+    fn unwrap(self) -> Type {
+        self.ty
+    }
+}
+impl<'a> OptionalTrait<&'a Type> for &'a Optional {
+    fn unwrap(self) -> &'a Type {
+        &self.ty
+    }
+}
+impl<'a> OptionalTrait<&'a mut Type> for &'a mut Optional {
+    fn unwrap(self) -> &'a mut Type {
+        &mut self.ty
     }
 }
 impl From<&NamedType> for Optional {
@@ -588,7 +599,7 @@ impl From<&NamedType> for Optional {
 
                 if list.len() == 1 && {
                     list.peek().map_or(false, |(_, opt): &(_, Optional)| {
-                        opt.is_false() && opt.unwrap_ref().is_enum()
+                        opt.is_false() && opt.unwrap().is_enum()
                     })
                 } {
                     let (name, en) = list
@@ -598,7 +609,11 @@ impl From<&NamedType> for Optional {
 
                     Type::Enum(Some(name), en).into()
                 } else {
-                    Type::Struct(list.collect::<List>()).into()
+                    let mut list = list.collect::<List>();
+                    list.iter_mut()
+                        .filter_map(|(_, opt)| (opt.is_false() && opt.ty.is_enum()).then_some(opt))
+                        .for_each(Optional::switch);
+                    Type::Struct(list).into()
                 }
             }
             SdmTy::Enum(values) => Type::Enum(
@@ -608,7 +623,7 @@ impl From<&NamedType> for Optional {
                     .map(|&&NamedVariant { name, ty }| {
                         (name.to_string(), (&NamedType { name, ty }).into())
                     })
-                    .collect::<List>(),
+                    .collect(),
             )
             .into(),
             SdmTy::Unit => Type::None.into(),
@@ -629,17 +644,20 @@ impl From<&NamedType> for Optional {
             SdmTy::F64 => Type::Number(NumberType::F64).into(),
             SdmTy::Char => Type::String(StringType::Char).into(),
             SdmTy::String => Type::String(StringType::String).into(),
-            SdmTy::ByteArray => todo!(),
             SdmTy::Option(value) => {
                 let unwrapped = Self::from(*value).unwrap();
                 if unwrapped.is_enum() {
                     unwrapped.into()
                 } else {
-                    Optional::True(unwrapped)
+                    Optional {
+                        opt: Opt::True,
+                        ty: unwrapped,
+                    }
                 }
             }
             SdmTy::Seq(value) => Type::Array(Box::new(Self::from(*value).unwrap())).into(),
             SdmTy::TupleVariant(value) => Self::from(value[0]),
+            SdmTy::ByteArray => todo!(),
             SdmTy::UnitStruct => todo!(),
             SdmTy::UnitVariant => todo!(),
             SdmTy::NewtypeStruct(_) => todo!(),
