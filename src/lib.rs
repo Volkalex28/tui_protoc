@@ -191,12 +191,18 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                     if !vec.contains(&"State") && opt.is_true() {
                         vec.push("State");
                     }
+                    if !vec.contains(&"Select") && opt.ty.is_enum() {
+                        vec.push("Select");
+                    }
                     vec
                 })),
             |mut args, (name, opt)| {
                 if let Some(value) = Self::generate_ui_value(opt.unwrap()) {
                     if opt.is_true() {
                         args = args.value(name, "State", true)
+                    }
+                    if opt.ty.is_enum() {
+                        args = args.value(name, "Select", "")
                     }
                     args.value(name, "Value", value)
                 } else {
@@ -315,7 +321,9 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                 log::info!("Array: {arr:#?}");
                 serde_json::Value::Array(
                     arr.iter()
-                        .map(|(_, item)| Self::generate_msg_ui(ty.deref(), item, key_ui.clone()))
+                        .map(|(_, item)| {
+                            Self::generate_msg_ui(ty.deref(), item, key_ui.clone(), None)
+                        })
                         .collect::<Vec<_>>(),
                 )
             }
@@ -374,13 +382,18 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                         serde_json::Value::Null
                     }
                 } else {
-                    Self::generate_msg_ui(ty, value, key_ui)
+                    Self::generate_msg_ui(ty, value, key_ui, None)
                 }
             }
         }
     }
 
-    fn generate_msg_ui<'n, I>(ty: &Type, value: &Branch, mut key: I) -> serde_json::Value
+    fn generate_msg_ui<'n, I>(
+        ty: &Type,
+        value: &Branch,
+        mut key: I,
+        mut selected: Option<String>,
+    ) -> serde_json::Value
     where
         I: Iterator<Item = &'n Node> + Clone,
     {
@@ -392,7 +405,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                         .then(|| args.get_value_by_indexes(0, 0))
                         .flatten()
                 } {
-                    return Self::tree_value_to_serde_value(ty, value, key);
+                    return Self::tree_value_to_serde_value(ty, value, key, selected);
                 }
                 let Some(list) = ty.as_struct_ref() else {
                     break 'val None;
@@ -409,23 +422,39 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                             })
                             .map_or(Some(opt.unwrap()), |_| None)
                             .and_then(|ty| {
-                                args.get_value_by_cindex(name, 0)
-                                    .map(|value| (name, ty, value))
+                                args.get_value_by_cindex(name, 0).map(|value| {
+                                    let selected = args
+                                        .get_value(name, "Select")
+                                        .and_then(|v| v.as_text())
+                                        .map(|v| v.lock().unwrap().lines()[0].clone());
+                                    (name, ty, value, selected)
+                                })
                             })
                     })
-                    .fold(serde_json::Map::new(), |mut map, (name, ty, value)| {
-                        map.insert(
-                            name.to_string(),
-                            Self::tree_value_to_serde_value(ty, value, key.clone()),
-                        );
-                        map
-                    })
+                    .fold(
+                        serde_json::Map::new(),
+                        |mut map, (name, ty, value, selected)| {
+                            map.insert(
+                                name.to_string(),
+                                Self::tree_value_to_serde_value(ty, value, key.clone(), selected),
+                            );
+                            map
+                        },
+                    )
                     .into()
             }
             Branch::Tree(tree) => {
                 if !tree.get_branches().is_empty() {
                     key.next()
-                        .map(|node| node.text())
+                        .map(|node| node.text().clone())
+                        .or_else(|| {
+                            let s = selected.as_ref()?;
+                            let mut splitted = s.split(">");
+                            let text = splitted.next().map(|t| t.to_owned());
+                            selected = Some(splitted.fold(String::new(), |out, t| out + t + ">"));
+                            text
+                        })
+                        .as_ref()
                         .and_then(|text| {
                             Some(text).zip(
                                 tree.get_branches()
@@ -439,9 +468,12 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                             )
                         })
                         .map(|(name, (value, ty))| {
-                            [(name.clone(), Self::generate_msg_ui(ty, value, key))]
-                                .into_iter()
-                                .collect()
+                            [(
+                                name.clone(),
+                                Self::generate_msg_ui(ty, value, key, selected),
+                            )]
+                            .into_iter()
+                            .collect()
                         })
                 } else {
                     return serde_json::Value::Null;
@@ -461,9 +493,10 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
                                         .and_then(|a| a.get_value_by_indexes(0, 0))
                                         .unwrap(),
                                     key.clone(),
+                                    None,
                                 )
                             } else {
-                                Self::generate_msg_ui(ty, b, key.clone())
+                                Self::generate_msg_ui(ty, b, key.clone(), None)
                             }
                         })
                         .collect(),
@@ -484,7 +517,12 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
         )
     }
 
-    fn tree_value_to_serde_value<'n, I>(ty: &Type, value: &Value, key: I) -> serde_json::Value
+    fn tree_value_to_serde_value<'n, I>(
+        ty: &Type,
+        value: &Value,
+        key: I,
+        selected: Option<String>,
+    ) -> serde_json::Value
     where
         I: Iterator<Item = &'n Node> + Clone,
     {
@@ -522,7 +560,7 @@ impl<'a, T: Schema + for<'de> serde::de::Deserialize<'de> + Debug> TuiProtoc<'a,
             .unwrap_or_default()
             .into(),
             TreeType::Array(_) | TreeType::Struct => {
-                Self::generate_msg_ui(ty, value.as_struct().unwrap(), key)
+                Self::generate_msg_ui(ty, value.as_struct().unwrap(), key, selected)
             }
         }
     }
