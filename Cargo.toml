@@ -1,7 +1,10 @@
 [package]
 name = "tui-protoc"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
+
+[patch.crates-io]
+postcard = { git = "https://github.com/jamesmunns/postcard", rev = "93d4ba23760edabf408af26dc9dbc9bec0a8ade8" }
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,4 +16,4 @@ linked-hash-map = "0.5"
 log = { version = "0.4", features = ["std"] }
 color-eyre = "0.6"
 tui = { version = "0.19" }
-tui-va-tree-edit = { git = "https://github.com/Volkalex28/tui_va_tree_edit" }
+tui-va-tree-edit = { git = "https://github.com/Volkalex28/tui_va_tree_edit", rev = "4f960f636ca0512c60449d065768275d7307efbe" }
